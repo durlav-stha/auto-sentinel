@@ -7,18 +7,22 @@ Stage 1 (Collectors + EventQueue) -> Stage 2 (DetectionEngine) -> Stage 3 (Remed
 import argparse
 import asyncio
 import logging
-import signal
-import sys
+from contextlib import suppress
 from pathlib import Path
+from typing import Optional
+from aiohttp import web
+
 from auto_sentinel.bus.queue import EventQueue
 from auto_sentinel.collectors.log_tailer import AsyncLogTailer
 from auto_sentinel.collectors.process_monitor import ProcessMonitor
+from auto_sentinel.dashboard.hub import EventHub
+from auto_sentinel.dashboard.server import create_app
 from auto_sentinel.detector.correlator import SlidingWindowCorrelator
 from auto_sentinel.detector.engine import DetectionEngine
+from auto_sentinel.ledger.tamper_evident import TamperEvidentLedger
 from auto_sentinel.remediation.network_blocker import NetworkBlocker
 from auto_sentinel.remediation.process_killer import ProcessKiller
 from auto_sentinel.remediation.runner import RemediationRunner
-from auto_sentinel.ledger.tamper_evident import TamperEvidentLedger
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,9 +34,18 @@ logger = logging.getLogger("auto-sentinel")
 class AutoSentinelEngine:
     """High-level SOAR runtime wiring all 4 stages together."""
 
-    def __init__(self, log_file: str | Path, ledger_file: str | Path, dry_run: bool = True):
+    def __init__(
+        self,
+        log_file: str | Path,
+        ledger_file: str | Path,
+        dry_run: bool = True,
+        hub: Optional[EventHub] = None,
+    ):
         self.log_file = Path(log_file)
         self.ledger_file = Path(ledger_file)
+        self.dry_run = dry_run
+        self.hub = hub
+
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
         self.ledger_file.parent.mkdir(parents=True, exist_ok=True)
         if not self.log_file.exists():
@@ -50,9 +63,14 @@ class AutoSentinelEngine:
             queue=self.queue,
             correlator=self.correlator,
             on_alert=self._on_alert,
+            on_event=self._on_event,
         )
         self.log_tailer = AsyncLogTailer(log_path=self.log_file, queue=self.queue)
         self.process_monitor = ProcessMonitor(queue=self.queue)
+
+    async def _on_event(self, event) -> None:
+        if self.hub is not None:
+            self.hub.record_event(event)
 
     async def _on_alert(self, alert) -> None:
         logger.warning(
@@ -64,6 +82,13 @@ class AutoSentinelEngine:
         results = await self.remediation.handle_alert(alert)
         for res in results:
             logger.info("🥊 REMEDIATION [%s -> %s]: %s", res.action_type.value, res.target, res.details)
+
+        if self.hub is not None:
+            self.hub.record_alert(alert)
+            for res in results:
+                self.hub.record_remediation(res)
+            if self.remediation.last_audit_record is not None:
+                self.hub.record_ledger(self.remediation.last_audit_record)
 
     async def start(self) -> None:
         """Start all async workers concurrently."""
@@ -88,12 +113,12 @@ class AutoSentinelEngine:
         logger.info("🔒 Shutdown complete. Ledger intact=%s (records=%d)", intact, total)
 
 
-async def run_demo_simulation(log_path: Path):
+async def run_demo_simulation(log_path: Path) -> None:
     """Simulates an attacker attempting SSH brute force in real time."""
     await asyncio.sleep(2.0)
     attacker_ip = "203.0.113.199"
     logger.info("⚔️ [SIMULATION] Attacker from IP %s begins brute-forcing SSH...", attacker_ip)
-    
+
     with open(log_path, "a", encoding="utf-8") as fp:
         for i in range(1, 6):
             fp.write(
@@ -106,27 +131,61 @@ async def run_demo_simulation(log_path: Path):
     logger.info("✅ [SIMULATION] Attack finished! Check logs above for Alert and Remediation.")
 
 
-async def main():
+async def main() -> None:
     parser = argparse.ArgumentParser(description="auto-sentinel: Automated Incident Response SOAR Engine")
     parser.add_argument("--demo", action="store_true", help="Run with an automated live attack simulation")
+    parser.add_argument("--dashboard", action="store_true", help="Start the live Web SOC Dashboard on localhost")
+    parser.add_argument("--port", type=int, default=8765, help="Localhost port for the Web SOC Dashboard (default: 8765)")
     parser.add_argument("--log-file", default="data/auth.log", help="Path to auth.log to watch")
     parser.add_argument("--ledger-file", default="data/audit.jsonl", help="Path to audit ledger")
     args = parser.parse_args()
 
     print("=" * 65)
-    print("  🛡️  AUTO-SENTINEL: Automated Incident Response SOAR Engine")
+    print("  AUTO-SENTINEL: Automated Incident Response SOAR Engine")
     print("=" * 65)
     print(f"[*] Telemetry Target : {args.log_file}")
     print(f"[*] Forensic Ledger  : {args.ledger_file}")
-    print(f"[*] Response Mode    : DRY-RUN (Safe Simulation)")
-    print(f"[*] Status           : ENGINE ARMED & LISTENING")
+    print("[*] Response Mode    : DRY-RUN (Safe Simulation)")
+    print("[*] Status           : ENGINE ARMED & LISTENING")
     print("=" * 65)
 
+    hub = EventHub() if args.dashboard else None
     engine = AutoSentinelEngine(
         log_file=args.log_file,
         ledger_file=args.ledger_file,
         dry_run=True,
+        hub=hub,
     )
+
+    if args.dashboard:
+        assert hub is not None
+        app = create_app(engine, hub, host="127.0.0.1", port=args.port)
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", args.port)
+        await site.start()
+        print(f"Dashboard: http://127.0.0.1:{args.port}", flush=True)
+
+        capacity = getattr(engine.queue._queue, "maxsize", 1000)
+        engine_task = asyncio.create_task(engine.start())
+        ticker_task = asyncio.create_task(hub.run_ticker(engine.queue.qsize, queue_capacity=capacity))
+        tasks = [engine_task, ticker_task]
+        if args.demo:
+            tasks.append(asyncio.create_task(run_demo_simulation(Path(args.log_file))))
+
+        try:
+            await asyncio.gather(*tasks)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        finally:
+            for t in tasks:
+                t.cancel()
+            for t in tasks:
+                with suppress(asyncio.CancelledError):
+                    await t
+            await runner.cleanup()
+            await engine.shutdown()
+        return
 
     tasks = [asyncio.create_task(engine.start())]
     if args.demo:
@@ -134,7 +193,6 @@ async def main():
 
     try:
         if args.demo:
-            # Run demo for 7 seconds then shutdown
             await asyncio.sleep(7.0)
         else:
             await asyncio.gather(*tasks)

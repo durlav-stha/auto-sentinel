@@ -4,6 +4,27 @@
 
 `auto-sentinel` is an asynchronous Python 3.12 security orchestration, automation, and response (SOAR) engine that ingests live host and authentication telemetry, correlates attack patterns mapped to **MITRE ATT&CK**, executes injection-safe active containment, and seals forensic evidence in a **SHA-256 hash-chained audit ledger**.
 
+![auto-sentinel Web SOC Dashboard](docs/dashboard.png)
+
+---
+
+## 🖥️ Web SOC Dashboard
+
+Launch the live browser console backed by Server-Sent Events (SSE) and `aiohttp`:
+
+```bash
+python -m auto_sentinel.main --dashboard
+```
+
+Then open `http://127.0.0.1:8765` (use `--port` to choose a different port, or combine with `--demo` to trigger an automated SSH brute-force simulation while the UI stays open).
+
+### Dashboard Security Controls
+* **Localhost-only binding**: Binds strictly to `127.0.0.1` so unauthenticated control endpoints are never exposed on the LAN.
+* **Strict CSP & HTTP headers**: Enforces `Content-Security-Policy: default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY` with zero inline scripts/styles.
+* **Origin CSRF guard**: Rejects any `POST` request whose `Origin` header does not match `http://127.0.0.1:<port>` or `http://localhost:<port>` with HTTP `403`.
+* **`textContent` XSS defense**: Renders all attacker-controlled telemetry (usernames, source IPs, raw log messages, command lines) exclusively via `document.createElement` and `.textContent`, never `innerHTML`.
+* **Bounded subscriber queues**: Each SSE client receives a bounded `asyncio.Queue(maxsize=256)`; slow clients drop stale updates instead of blocking the engine or leaking memory.
+
 ---
 
 ## 🏗️ 4-Stage Pipeline Architecture

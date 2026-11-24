@@ -4,7 +4,7 @@ Coordinates active response actions for incoming Alerts and records outcomes.
 """
 
 from typing import List, Optional
-from auto_sentinel.models import Alert, RemediationResult
+from auto_sentinel.models import Alert, AuditRecord, RemediationResult
 from auto_sentinel.remediation.network_blocker import NetworkBlocker
 from auto_sentinel.remediation.process_killer import ProcessKiller
 from auto_sentinel.ledger.tamper_evident import TamperEvidentLedger
@@ -23,10 +23,12 @@ class RemediationRunner:
         self.process_killer = process_killer or ProcessKiller(dry_run=True)
         self.ledger = ledger
         self.history: List[RemediationResult] = []
+        self.last_audit_record: Optional[AuditRecord] = None
 
     async def handle_alert(self, alert: Alert) -> List[RemediationResult]:
         """Execute appropriate containment playbooks for a given Alert."""
         results: List[RemediationResult] = []
+        self.last_audit_record = None
 
         if alert.target_ip:
             res = self.network_blocker.block_ip(alert.target_ip)
@@ -39,7 +41,7 @@ class RemediationRunner:
             self.history.append(res)
 
         if self.ledger is not None:
-            self.ledger.append_record(
+            self.last_audit_record = self.ledger.append_record(
                 event_type="ALERT_AND_REMEDIATION",
                 payload={
                     "alert_id": alert.alert_id,

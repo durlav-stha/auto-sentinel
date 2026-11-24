@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>auto-sentinel — SOAR console</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="shell">
+    <!-- Top Bar (48px) -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="wordmark">auto-sentinel</span>
+        <span class="subtitle">SOAR console</span>
+      </div>
+
+      <div class="topbar-center">
+        <span class="status-group">
+          <span id="engine-dot" class="dot dot-success" aria-hidden="true"></span>
+          <span id="engine-mode">Armed &middot; dry-run</span>
+        </span>
+        <span class="divider-v" aria-hidden="true"></span>
+        <span class="status-group">
+          <span id="sse-dot" class="dot dot-warn" aria-hidden="true"></span>
+          <span id="sse-state">Connecting...</span>
+        </span>
+      </div>
+
+      <div class="topbar-right">
+        <span class="uptime-wrap">
+          <span class="label-inline">UPTIME</span>
+          <span id="uptime" class="mono tabular">00:00:00</span>
+        </span>
+        <div class="sim-controls">
+          <span id="sim-feedback" class="sim-feedback" aria-live="polite"></span>
+          <button id="btn-sim-brute" type="button" class="btn">Simulate brute force</button>
+          <button id="btn-sim-shell" type="button" class="btn">Simulate reverse shell</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- 6-cell KPI Strip -->
+    <section class="kpi-strip" aria-label="Telemetry summary">
+      <div class="kpi-cell">
+        <div class="kpi-label">Events ingested</div>
+        <div id="kpi-events" class="kpi-value tabular">0</div>
+      </div>
+      <div class="kpi-cell">
+        <div class="kpi-label">Alerts</div>
+        <div id="kpi-alerts" class="kpi-value tabular">0</div>
+      </div>
+      <div class="kpi-cell">
+        <div class="kpi-label">IPs blocked</div>
+        <div id="kpi-ips" class="kpi-value tabular">0</div>
+      </div>
+      <div class="kpi-cell">
+        <div class="kpi-label">Processes terminated</div>
+        <div id="kpi-procs" class="kpi-value tabular">0</div>
+      </div>
+      <div class="kpi-cell">
+        <div class="kpi-label">Queue depth</div>
+        <div class="kpi-queue-row">
+          <span id="kpi-queue" class="kpi-value-sm mono tabular">0 / 1000</span>
+        </div>
+        <div class="queue-track" aria-hidden="true">
+          <div id="kpi-queue-bar" class="queue-fill"></div>
+        </div>
+      </div>
+      <div class="kpi-cell">
+        <div class="kpi-label">Ledger</div>
+        <div class="kpi-ledger-row">
+          <span id="kpi-ledger-count" class="kpi-value tabular">0</span>
+          <span id="kpi-ledger-status" class="ledger-state state-ok">Intact</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Dashboard Grid -->
+    <main class="grid-main">
+      <!-- Row 1 Left: Event Stream + Sparkline -->
+      <section class="panel panel-events" aria-labelledby="hdr-events">
+        <div class="panel-header">
+          <h2 id="hdr-events" class="panel-title">Event stream</h2>
+          <span id="eps-readout" class="panel-meta mono tabular">0 evt/s &middot; 60s</span>
+        </div>
+        <div class="sparkline-wrap">
+          <canvas id="eps-sparkline" class="sparkline-canvas" height="44"></canvas>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th class="col-time">Time</th>
+                <th class="col-type">Type</th>
+                <th class="col-source">Source</th>
+                <th class="col-ip">Src IP</th>
+                <th class="col-user">User</th>
+                <th class="col-detail">Detail</th>
+              </tr>
+            </thead>
+            <tbody id="events-body"></tbody>
+          </table>
+          <div id="events-empty" class="empty-state">No events. Engine is watching data/auth.log.</div>
+        </div>
+      </section>
+
+      <!-- Row 1 Right: Alerts -->
+      <section class="panel panel-alerts" aria-labelledby="hdr-alerts">
+        <div class="panel-header">
+          <h2 id="hdr-alerts" class="panel-title">Alerts</h2>
+          <span id="alerts-meta" class="panel-meta mono tabular">0 raised</span>
+        </div>
+        <div id="alerts-list" class="alerts-list"></div>
+        <div id="alerts-empty" class="empty-state">No alerts. Engine is watching data/auth.log.</div>
+      </section>
+
+      <!-- Row 2 Left: Response Actions -->
+      <section class="panel panel-responses" aria-labelledby="hdr-responses">
+        <div class="panel-header">
+          <h2 id="hdr-responses" class="panel-title">Response actions</h2>
+          <span id="responses-meta" class="panel-meta mono tabular">0 executed</span>
+        </div>
+        <div class="table-wrap table-wrap-sm">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th class="col-time">Time</th>
+                <th class="col-action">Action</th>
+                <th class="col-target">Target</th>
+                <th class="col-result">Result</th>
+                <th class="col-detail">Details</th>
+              </tr>
+            </thead>
+            <tbody id="responses-body"></tbody>
+          </table>
+          <div id="responses-empty" class="empty-state">No containment actions executed.</div>
+        </div>
+      </section>
+
+      <!-- Row 2 Right: Audit Ledger -->
+      <section class="panel panel-ledger" aria-labelledby="hdr-ledger">
+        <div class="panel-header">
+          <h2 id="hdr-ledger" class="panel-title">Audit ledger</h2>
+          <div class="ledger-actions">
+            <span id="verify-status" class="verify-status mono"></span>
+            <button id="btn-verify-chain" type="button" class="btn btn-sm">Verify chain</button>
+          </div>
+        </div>
+        <div id="ledger-chain" class="ledger-chain"></div>
+        <div id="ledger-empty" class="empty-state">No audit records in session.</div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

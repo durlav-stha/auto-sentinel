@@ -12,6 +12,7 @@ from auto_sentinel.detector.signatures import SignatureMatcher
 from auto_sentinel.detector.correlator import SlidingWindowCorrelator
 
 AlertCallback = Callable[[Alert], Awaitable[None]]
+EventCallback = Callable[[SecurityEvent], Awaitable[None]]
 
 
 class DetectionEngine:
@@ -22,15 +23,20 @@ class DetectionEngine:
         queue: EventQueue,
         correlator: Optional[SlidingWindowCorrelator] = None,
         on_alert: Optional[AlertCallback] = None,
+        on_event: Optional[EventCallback] = None,
     ):
         self.queue = queue
         self.correlator = correlator or SlidingWindowCorrelator()
         self.on_alert = on_alert
+        self.on_event = on_event
         self.alerts_generated: List[Alert] = []
         self._stop_event = asyncio.Event()
 
     async def process_event(self, event: SecurityEvent) -> List[Alert]:
         """Run a single SecurityEvent through all detection layers."""
+        if self.on_event is not None:
+            await self.on_event(event)
+
         triggered_alerts: List[Alert] = []
 
         # 1. Stateless Instant Signatures
